@@ -95,21 +95,53 @@ QQ 的视频 URL 带签名、每次都不一样，拿 URL 当缓存键必然全 
 
 ## 4. 安装
 
-### 方式 A：插件市场（推荐）
+> 插件就是一个普通目录：Runner 会扫描 `MaiBot/plugins/*/_manifest.json` 来发现它。
+> 目录名叫什么不影响识别（建议叫 `video-vision`），真正的身份是 manifest 里的 `id`。
+
+### 方式 A：插件市场（上架后推荐）
 
 MaiBot WebUI → 插件管理 → 插件市场 → 搜索「视频识眼 / Video Vision」→ 安装 → 在插件设置里确认 `vlm` 任务已配置。
 
-### 方式 B：手动
+### 方式 B：git clone（测试期推荐，方便更新）
 
 ```bash
 cd MaiBot/plugins
 git clone https://github.com/SaltinAnon/maibot-video-vision.git video-vision
 ```
 
-重启 MaiBot（或在 WebUI 里重载插件）。首次加载会：
+以后更新只需要 `cd plugins/video-vision && git pull`。
+
+### 方式 C：从本地文件夹直装（还没上架时最快）
+
+```bash
+# Windows（Git Bash / PowerShell 均可，注意目标路径换成你自己的 MaiBot）
+cp -r F:/WorkSpace/maibot_plugins/maibot01 "D:/MaiBot/plugins/video-vision"
+# 或者直接复制粘贴整个 maibot01 文件夹，重命名为 video-vision
+```
+
+装完重启 MaiBot（或在 WebUI 插件页点「重载」）。首次加载会：
 
 1. 按 `config_model` 生成 `plugins/video-vision/config.toml`；
 2. 自动安装声明的 Python 依赖 `imageio-ffmpeg`（自带 ffmpeg 静态二进制，省去手动装）。
+
+### 装完后的验收（三件事，缺一不可）
+
+| # | 检查 | 预期 |
+|---|---|---|
+| 1 | WebUI → 插件管理 | 出现「视频识眼」，状态是**已加载**；日志有 `视频识眼已加载：ffmpeg=...` |
+| 2 | 插件设置 | 能看到 6 个配置分区（插件/视频识别/抽帧/视觉模型/成本与限额/运行时） |
+| 3 | 私聊发一段视频 | 消息里出现 `[视频内容] …`；发 `/video status` 能看到计数 |
+
+### 加载失败怎么查
+
+| 现象 | 原因 | 修法 |
+|---|---|---|
+| 插件不出现 | 目录层级错了（放成了 `plugins/video-vision/maibot01/_manifest.json`） | `_manifest.json` 必须直接位于 `plugins/<任意名>/` 下 |
+| 状态红色 / 未加载 | manifest 校验失败 | 看日志里 `ManifestValidator` 的具体行；对照 `python -m json.tool _manifest.json` |
+| `ModuleNotFoundError: imageio_ffmpeg` | 自动装依赖失败（网络/镜像） | 在 MaiBot 根目录执行 `uv pip install imageio-ffmpeg` |
+| 日志「未找到 ffmpeg」 | 依赖没装上 | 同上，或在插件设置里填 `runtime.ffmpeg_path` |
+| 有视频但没注入 | 触发条件没满足 | 群聊要 @ 机器人，或是私聊；检查 `detect.trigger_mode` 不是 `off` |
+| 日志 `no_video_segment` | 适配器 `get_msg` 没返回视频段 | 确认统一 QQ 连接器版本，且视频消息没被协议端清理 |
 
 ### 依赖
 
