@@ -22,10 +22,10 @@
 打开 `_manifest.json`，把这三处换成你的账号：
 
 ```json
-"id": "com.saltin.video-vision",          // 建议改成 github.<你的用户名>.video-vision
-"author": { "name": "Saltin", "url": "https://github.com/SaltinA" },
+"id": "github.<你的用户名>.video-vision",   // 例：github.saltinanon.video-vision
+"author": { "name": "Saltin", "url": "https://github.com/<你的用户名>" },
 "urls": {
-  "repository": "https://github.com/SaltinA/maibot-video-vision",   // 不带 .git
+  "repository": "https://github.com/<你的用户名>/maibot-video-vision",   // 不带 .git
   "homepage": "...",
   "documentation": ".../blob/main/README.md",
   "issues": ".../issues"
@@ -38,7 +38,7 @@
 同时改 `plugin.py` 里的常量：
 
 ```python
-PLUGIN_ID = "com.saltin.video-vision"   # 与 manifest 的 id 保持一致
+PLUGIN_ID = "github.<你的用户名>.video-vision"   # 与 manifest 的 id 保持一致
 ```
 
 ---

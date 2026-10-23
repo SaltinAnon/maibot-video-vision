@@ -103,7 +103,7 @@ MaiBot WebUI → 插件管理 → 插件市场 → 搜索「视频识眼 / Video
 
 ```bash
 cd MaiBot/plugins
-git clone https://github.com/SaltinA/maibot-video-vision.git video-vision
+git clone https://github.com/SaltinAnon/maibot-video-vision.git video-vision
 ```
 
 重启 MaiBot（或在 WebUI 里重载插件）。首次加载会：

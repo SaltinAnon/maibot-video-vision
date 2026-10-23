@@ -10,10 +10,10 @@
   },
   "license": "MIT",
   "urls": {
-    "repository": "https://github.com/SaltinA/maibot-video-vision",
-    "homepage": "https://github.com/SaltinA/maibot-video-vision",
-    "documentation": "https://github.com/SaltinA/maibot-video-vision/blob/main/README.md",
-    "issues": "https://github.com/SaltinA/maibot-video-vision/issues"
+    "repository": "https://github.com/SaltinAnon/maibot-video-vision",
+    "homepage": "https://github.com/SaltinAnon/maibot-video-vision",
+    "documentation": "https://github.com/SaltinAnon/maibot-video-vision/blob/main/README.md",
+    "issues": "https://github.com/SaltinAnon/maibot-video-vision/issues"
   },
   "host_application": {
     "min_version": "1.3.0",
