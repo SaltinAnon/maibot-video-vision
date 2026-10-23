@@ -235,7 +235,8 @@ ask_max_chars = 80
 | `/video clear` | 清空摘要缓存（操作员级） |
 | 模型调用 `watch_video` | 群聊没被 @、或追问「视频里那行字写了啥」时按需解析 |
 
-`watch_video` 参数：`stream_id`（必填，当前聊天流）、`question`（可选，具体问题）。
+`watch_video` 参数：只有 `question`（可选）。**会话 ID 不在工具参数里**——它由宿主注入，
+插件只认注入值。这样模型即使被话术引导，也无法指定去翻别的聊天流。
 
 ## 7. 与 SnowLuma 的兼容性
 
@@ -263,6 +264,7 @@ ask_max_chars = 80
 | 日志报 `insecure_url` | 视频地址是 `http://` 或重定向到了非 https：正常拦截；确需放行改 `security.allow_http` |
 | 日志报 `blocked_host` | 地址解析到 127.0.0.1 / 192.168.x / 10.x 等非公网 IP：同机部署才开 `security.allow_private_hosts` |
 | 日志报 `local_path_not_allowed` | 协议端只给了本地路径：把它所在目录加进 `security.local_media_roots` |
+| **装完后所有插件都不跑了** | 插件在注册阶段抛异常会拖垮整个第三方 Runner。日志搜 `Runner 进程异常退出` 看 traceback；先把插件目录移出 `plugins/` 即可恢复其它插件 |
 
 ## 9. 本地自检（不需要 QQ、不需要 API Key）
 

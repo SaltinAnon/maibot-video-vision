@@ -53,8 +53,14 @@ class VideoVisionPlugin(MaiBotPlugin):
     config_model = VideoVisionConfig
 
     def __init__(self) -> None:
-        """初始化插件（此时还没有 ctx，真正的初始化在 on_load）。"""
+        """初始化插件（此时还没有 ctx，真正的初始化在 on_load）。
 
+        ⚠️ 必须调用 `super().__init__()`：基类会初始化 `_dynamic_api_components` 等
+        注册期字段。漏掉它，宿主在 `get_components()` 阶段就会抛 AttributeError，
+        而这个异常发生在**第三方 Runner 进程内**，会连带把所有第三方插件一起搞停。
+        """
+
+        super().__init__()
         self._cache: CacheStore | None = None
         self._pipeline: VideoPipeline | None = None
         self._markers: tuple[Any, ...] = ()
@@ -293,16 +299,11 @@ class VideoVisionPlugin(MaiBotPlugin):
         brief_description="查看当前聊天里最近一个视频的内容（画面描述或回答问题）",
         detailed_description=(
             "当聊天里出现过视频、而你需要知道视频画面里到底是什么时调用。"
-            "只解析最近一条带视频的消息；同一个视频命过缓存时不会重复消耗视觉模型。"
+            "只解析**当前会话**最近一条带视频的消息；不需要也不能指定聊天 ID，宿主会自动注入。"
+            "同一个视频命过缓存时不会重复消耗视觉模型。"
             "如果视频内容已经在上下文里（形如 [视频内容] …），就不要再调用。"
         ),
         parameters=[
-            ToolParameterInfo(
-                name="stream_id",
-                param_type=ToolParamType.STRING,
-                description="当前聊天流 ID",
-                required=False,
-            ),
             ToolParameterInfo(
                 name="question",
                 param_type=ToolParamType.STRING,
@@ -311,21 +312,28 @@ class VideoVisionPlugin(MaiBotPlugin):
             ),
         ],
     )
-    async def watch_video(self, stream_id: str = "", question: str = "", **kwargs: Any) -> dict[str, Any]:
-        """按需解析最近的视频消息。
+    async def watch_video(self, question: str = "", **kwargs: Any) -> dict[str, Any]:
+        """按需解析**当前会话**最近的视频消息。
+
+        会话 ID 只认宿主注入的 `stream_id` / `chat_id`，不在工具参数里暴露：
+        宿主组装工具参数时，模型提供的同名字段会覆盖上下文注入值，
+        所以一旦把它写进 schema，就等于允许模型自行指定去翻哪个聊天流。
 
         Args:
-            stream_id: 聊天流 ID。
             question: 具体问题。
-            **kwargs: 额外参数（宿主可能直接注入 stream_id）。
+            **kwargs: 宿主注入的执行上下文（含 stream_id / chat_id）。
 
         Returns:
             dict: 工具结果，其中 ``content`` 为给模型看的文本。
         """
 
-        chat_id = str(stream_id or kwargs.get("stream_id") or kwargs.get("chat_id") or "").strip()
+        chat_id = str(kwargs.get("stream_id") or kwargs.get("chat_id") or "").strip()
         if not chat_id:
-            return {"success": False, "name": "watch_video", "content": "缺少 stream_id，无法定位聊天流。"}
+            return {
+                "success": False,
+                "name": "watch_video",
+                "content": "拿不到当前会话上下文，已拒绝执行（不会按模型指定的聊天流去翻记录）。",
+            }
         if self._pipeline is None:
             return {"success": False, "name": "watch_video", "content": "插件尚未完成初始化。"}
 

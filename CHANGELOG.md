@@ -16,6 +16,11 @@
 
 ### 修复
 
+- **致命**：`VideoVisionPlugin.__init__` 漏调 `super().__init__()`，导致宿主 `get_components()`
+  抛 `AttributeError: '_dynamic_api_components'`，**整个第三方 Runner 退出、所有插件停摆**。
+  已补上基类初始化，并在自检里增加 `get_components()` 回归断言。
+- `watch_video` 不再把 `stream_id` 暴露成工具参数：宿主的工具参数组装逻辑会让模型提供的同名字段
+  覆盖上下文注入值，等于允许模型指定去翻哪个聊天流。现在只认宿主注入的会话 ID，缺失即拒绝执行。
 - `_manifest.json` 的 `urls.repository` / `homepage` / `documentation` / `issues` 指向错误账号（`SaltinA` → `SaltinAnon`），市场链接曾 404。
 - README 中的数据目录名与真实插件 ID 对齐（`github.saltinanon.video-vision`）。
 

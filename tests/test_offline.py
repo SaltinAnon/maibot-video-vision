@@ -147,7 +147,12 @@ def check_components() -> None:
     tool = next(c for c in components if c.get("type") == "TOOL")
     check("工具名是 watch_video", tool["name"] == "watch_video")
     params = [item["name"] for item in tool["metadata"]["parameters"]]
-    check("工具参数包含 stream_id / question", params == ["stream_id", "question"], str(params))
+    check("工具不暴露会话 ID（只留 question）", params == ["question"], str(params))
+
+    # 走一遍宿主真正用的注册路径：曾因漏调 super().__init__() 在这里抛
+    # AttributeError: '_dynamic_api_components'，直接把整个第三方 Runner 拖崩
+    registered = create_plugin().get_components()
+    check("get_components() 可执行且返回 3 个组件", len(registered) == 3, str(len(registered)))
 
     command = next(c for c in components if c.get("type") == "COMMAND")
     check("命令是操作员级", command["metadata"].get("permission") == "operator", str(command["metadata"]))
@@ -476,6 +481,9 @@ async def run_flow(ffmpeg: str) -> None:
             # --- 工具 ---
             ctx.video_data = {"file": "demo.mp4", "url": video_url, "file_size": 123456}
             ctx.history = [build_message("msg-003")]
+            no_context = await plugin.watch_video(question="画面里有几个场景？")
+            check("缺少会话上下文时工具拒绝执行", not no_context.get("success"), str(no_context))
+
             tool_result = await plugin.watch_video(stream_id="qq-group-9527", question="画面里有几个场景？")
             check("watch_video 成功", bool(tool_result.get("success")), str(tool_result))
             check("工具返回了内容", bool(tool_result.get("content")))
