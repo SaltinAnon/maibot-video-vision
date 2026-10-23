@@ -24,6 +24,12 @@
 - `_manifest.json` 的 `urls.repository` / `homepage` / `documentation` / `issues` 指向错误账号（`SaltinA` → `SaltinAnon`），市场链接曾 404。
 - README 中的数据目录名与真实插件 ID 对齐（`github.saltinanon.video-vision`）。
 
+### 兼容性
+
+- 兼容「思考型」视觉模型：`response` 为空时依次尝试 `content` / `text` / `reasoning`，避免正文被思考过程挤掉时直接判失败。
+- `vision.max_output_tokens` 默认 200 → 800（`max_tokens` 只是上限，不按上限计费）。
+- 失败日志改为携带模型返回结构（`_brief()`），能直接看出是空内容、截断还是鉴权错误。
+
 ### 测试
 
 - 自检新增三条安全断言：默认拒绝 http、默认拒绝本地路径、重定向到 `file://` 被拦。

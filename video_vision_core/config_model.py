@@ -108,7 +108,10 @@ class VisionConfig(PluginConfigBase):
         default="",
         description="留空则用任务默认模型；填具体模型名可强制指定（如 qwen-vl-max）。",
     )
-    max_output_tokens: int = Field(default=200, description="摘要输出上限，越短越省。")
+    max_output_tokens: int = Field(
+        default=800,
+        description="摘要输出上限。思考型模型会先花 token 思考，太小会导致正文为空（上限本身不额外计费）。",
+    )
     temperature: float = Field(default=0.2, description="建议低温度，减少幻觉和发散。")
     caption_max_chars: int = Field(default=120, description="摘要正文最大字符数，超出会截断。")
 

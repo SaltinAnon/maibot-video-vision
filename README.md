@@ -184,7 +184,7 @@ dedupe_threshold = 3
 [vision]
 task_name = "vlm"       # MaiBot 的「看图」任务，需要 visual=true 的模型
 model_name = ""         # 留空用任务默认；也可强制指定
-max_output_tokens = 200
+max_output_tokens = 800   # 思考型模型会先花 token 思考，太小会导致正文为空
 temperature = 0.2
 caption_max_chars = 120
 
@@ -259,6 +259,7 @@ ask_max_chars = 80
 | 日志报 `no_video_segment` | 适配器 `get_msg` 没返回 video 段：确认适配器版本、视频是否已被协议端清理 |
 | 日志报 `no_url` | 视频段里只有 file_id：检查协议端 `get_file` 是否可用 |
 | 日志报 `vision_failed` | `vlm` 任务没配模型 / 模型 `visual` 不为 true / 模型名填错 |
+| 日志 `vision_failed：视觉模型返回了空内容` | **思考型模型把 max_tokens 全烧在 reasoning 上**。给 vlm 单独建一个模型条目并加 `extra_params = { thinking = { type = "disabled" } }`，或把 `vision.max_output_tokens` 提到 800+ |
 | 解析很慢 | 视频大 → 调小 `max_download_mb`、`max_duration_seconds`；或把 `hook_sync_budget_ms` 降到 8000 |
 | 摘要太笼统 | 调大 `max_frames`（4~6）、`max_edge_px`（768），或换更强的 vlm |
 | 日志报 `insecure_url` | 视频地址是 `http://` 或重定向到了非 https：正常拦截；确需放行改 `security.allow_http` |

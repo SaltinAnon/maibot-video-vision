@@ -103,7 +103,9 @@ def clean_text(raw: str, *, max_chars: int) -> str:
         if not stripped:
             continue
         if stripped.startswith(("字幕：", "字幕:")):
-            subtitle = stripped[3:].strip()[:30]
+            subtitle = stripped[3:].strip()
+            if len(subtitle) > 30:
+                subtitle = subtitle[:29] + "…"
             continue
         caption_parts.append(stripped)
 
@@ -115,6 +117,53 @@ def clean_text(raw: str, *, max_chars: int) -> str:
     if subtitle:
         return f"{caption}（字幕：{subtitle}）" if caption else f"字幕：{subtitle}"
     return caption
+
+
+def _extract_text(result: dict[str, Any]) -> tuple[str, bool]:
+    """从模型返回里取正文，兼容多种字段名与「思考型」模型。
+
+    Args:
+        result: 宿主 `ctx.llm.generate` 的返回字典。
+
+    Returns:
+        tuple[str, bool]: (文本, 是否来自 reasoning 兜底)。
+    """
+
+    for key in ("response", "content", "text"):
+        value = result.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip(), False
+
+    reasoning = result.get("reasoning")
+    if isinstance(reasoning, str) and reasoning.strip():
+        return reasoning.strip(), True
+
+    return "", False
+
+
+def _brief(result: dict[str, Any], limit: int = 220) -> str:
+    """把模型返回压成一行摘要，用于错误信息里定位问题。
+
+    只保留结构信息，不打日志刷屏；`usage` 这类噪声字段直接跳过。
+
+    Args:
+        result: 模型返回字典。
+        limit: 最大字符数。
+
+    Returns:
+        str: 例如 ``keys=[...] model=x response='' reasoning='...'``。
+    """
+
+    parts: list[str] = [f"keys={sorted(str(key) for key in result)}"]
+    for key in ("model", "model_name", "error", "finish_reason", "response", "reasoning", "content"):
+        if key not in result:
+            continue
+        value = result.get(key)
+        if isinstance(value, str):
+            parts.append(f"{key}={value[:80]!r}")
+        elif value is not None:
+            parts.append(f"{key}={value!r}"[:100])
+    return " ".join(parts)[:limit]
 
 
 def _estimate_tokens(frames: int, prompt: str, output: str) -> int:
@@ -202,12 +251,15 @@ async def describe_frames(
     if not isinstance(result, dict):
         raise VisionError("视觉模型返回结构异常")
     if not result.get("success"):
-        raise VisionError(str(result.get("error") or "视觉模型返回失败"))
+        raise VisionError(f"视觉模型返回失败：{_brief(result)}")
 
-    raw_text = str(result.get("response") or "").strip()
+    raw_text, from_reasoning = _extract_text(result)
     text = clean_text(raw_text, max_chars=max_chars)
     if not text:
-        raise VisionError("视觉模型返回了空内容")
+        raise VisionError(f"视觉模型返回了空内容：{_brief(result)}")
+    if from_reasoning:
+        # 混入型思考模型的 reasoning 往往带分析口吻，这里只截取尾部当摘要用
+        text = clean_text(raw_text[-max(max_chars * 3, 200) :], max_chars=max_chars) or text
 
     usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}
     tokens_estimate = _estimate_tokens(len(images_base64), prompt_text, raw_text)
