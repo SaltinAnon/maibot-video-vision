@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "id": "github.saltinanon.video-vision",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "name": "视频识眼",
   "description": "让麦麦真正看见视频：按需抽帧 + 视觉模型一次理解，把视频压缩成一句摘要注入上下文；兼容 SnowLuma / NapCat 统一 QQ 连接器，默认只花一次视觉调用，重复视频零消耗。",
   "author": {

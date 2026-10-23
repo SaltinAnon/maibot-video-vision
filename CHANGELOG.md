@@ -1,5 +1,28 @@
 # CHANGELOG
 
+## 1.0.1 — 2026-10-23
+
+按插件中心审核意见（Issue #944）做的安全加固与文档修正。
+
+### 安全（SSRF / 本地文件读取）
+
+- 新增 `[security]` 配置节，默认最严：
+  - `allow_http = false`：只放行 `https`，`http://` 明文默认拒绝；
+  - `allow_private_hosts = false`：解析出的 IP 出现 loopback / 私网 / link-local / 组播 / 保留地址即拒绝（多 A 记录逐个检查）；
+  - `local_media_roots = []`：本地路径默认**完全禁止**读取，配置白名单后仍要求 `resolve()` 展开符号链接后落在目录内；
+  - `max_redirects = 3`：改为手动跟跳，**每一跳都重新校验协议与主机**，避免「公网 302 到 127.0.0.1」。
+- 拒绝带用户名/密码的 URL。
+- 新增错误码：`insecure_url` / `blocked_host` / `local_path_not_allowed` / `redirect_failed`。
+
+### 修复
+
+- `_manifest.json` 的 `urls.repository` / `homepage` / `documentation` / `issues` 指向错误账号（`SaltinA` → `SaltinAnon`），市场链接曾 404。
+- README 中的数据目录名与真实插件 ID 对齐（`github.saltinanon.video-vision`）。
+
+### 测试
+
+- 自检新增三条安全断言：默认拒绝 http、默认拒绝本地路径、重定向到 `file://` 被拦。
+
 ## 1.0.0 — 2026-10-23
 
 首个版本。

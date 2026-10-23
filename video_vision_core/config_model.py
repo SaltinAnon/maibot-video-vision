@@ -162,7 +162,40 @@ class PluginMetaConfig(PluginConfigBase):
     __ui_icon__ = "package"
     __ui_order__ = 0
 
-    config_version: str = Field(default="1.0.0", description="配置结构版本号，改动配置字段时同步递增。")
+    config_version: str = Field(default="1.0.1", description="配置结构版本号，改动配置字段时同步递增。")
+
+
+class SecurityConfig(PluginConfigBase):
+    """取视频时的地址策略。
+
+    默认值刻意「最严」：视频 url 来自协议端返回的 OneBot 段，属于不可信输入，
+    伪造一条事件就能让插件去探测内网或读本机文件。只有明确知道自己在干什么，
+    才应该放开下面的开关。
+    """
+
+    __ui_label__ = "安全"
+    __ui_icon__ = "shield"
+    __ui_order__ = 45
+
+    allow_http: bool = Field(
+        default=False,
+        description="是否允许 http:// 明文地址。默认只放行 https；qlogo/腾讯 CDN 都是 https，一般不用开。",
+    )
+    allow_private_hosts: bool = Field(
+        default=False,
+        description=(
+            "是否允许访问 loopback / 私网 / 链路本地地址。"
+            "仅当协议端把媒体服务跑在同机（如 http://127.0.0.1:3000/xxx）且你信任它时才开。"
+        ),
+    )
+    local_media_roots: list[str] = Field(
+        default=[],
+        description=(
+            "允许读取的本地目录白名单（如协议端的缓存目录）。留空表示完全禁止读取本地路径，"
+            "这是安全默认值；填了之后解析符号链接也必须落在目录内。"
+        ),
+    )
+    max_redirects: int = Field(default=3, description="最多跟随几次重定向（每一跳都会重新校验地址）。")
 
 
 class VideoVisionConfig(PluginConfigBase):
@@ -173,4 +206,5 @@ class VideoVisionConfig(PluginConfigBase):
     frames: FramesConfig = Field(default_factory=FramesConfig)
     vision: VisionConfig = Field(default_factory=VisionConfig)
     budget: BudgetConfig = Field(default_factory=BudgetConfig)
+    security: SecurityConfig = Field(default_factory=SecurityConfig)
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)

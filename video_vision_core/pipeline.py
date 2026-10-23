@@ -278,6 +278,7 @@ class VideoPipeline:
                 source,
                 max_bytes=max_bytes,
                 timeout=float(config.runtime.download_timeout_seconds),
+                security=config.security,
                 logger=self._logger,
             )
         except SourceError as exc:

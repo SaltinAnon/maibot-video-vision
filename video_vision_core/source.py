@@ -1,4 +1,4 @@
-"""视频源解析与下载。
+"""视频源解析与下载（含 SSRF / 本地文件读取防护）。
 
 核心链路（兼容 snowluma / NapCat 统一 QQ 连接器）：
 
@@ -6,21 +6,34 @@
                                                                      │
                                             video 段里的 url / file ─┘
                                                                      │
-                                            httpx 流式下载（带体积上限）
+                                            受限下载（https + 公网地址）
 
 为什么要绕这一圈：适配器在把消息交给 MaiBot 之前就把 video 段降级成文本了，
 只有 `get_msg` 这个「回头看原始消息」的动作还能拿回 url。
+
+⚠️ 安全边界（评审要求，默认最严）：
+- 只放行 `https`，`http://` 默认拒绝（`security.allow_http` 可显式放开）；
+- 解析到的 IP 不能是 loopback / 私网 / link-local / 组播 / 保留地址；
+- **每一跳重定向都要重新校验**，避免「公网地址 302 到 127.0.0.1」；
+- 本地路径默认完全不可读，除非把目录显式加进 `security.local_media_roots`，
+  且解析符号链接后仍必须落在该目录内。
+
+之所以防这么死：`url` / `file` 来自协议端返回的 OneBot 段，属于不可信输入。
+伪造一条事件就能让插件去探测内网或读本机文件，那是不该留的口子。
 """
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
+import ipaddress
 import os
+import socket
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, urljoin, urlparse
 
 import httpx
 
@@ -85,6 +98,108 @@ class VideoSource:
             return int(raw)
         except (TypeError, ValueError):
             return 0
+
+
+# ---------------------------------------------------------------------------
+# 地址策略
+# ---------------------------------------------------------------------------
+
+
+def _blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """判断一个 IP 是否属于「不该由插件访问」的范围。
+
+    Args:
+        ip: 已解析的 IP 对象。
+
+    Returns:
+        bool: 命中私网/环回/链路本地/组播/保留/未指定时为 True。
+    """
+
+    return bool(
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_reserved
+        or ip.is_unspecified
+    )
+
+
+async def _assert_host_allowed(host: str, security: Any) -> None:
+    """校验主机名解析出的全部地址都是公网地址。
+
+    逐个检查而不是只看第一个：DNS 多 A 记录时，只要有一个内网地址就拒绝。
+
+    Args:
+        host: 主机名或 IP 字面量。
+        security: 安全配置（读取 ``allow_private_hosts``）。
+
+    Raises:
+        SourceError: 命中非公网地址或解析失败时抛出。
+    """
+
+    if getattr(security, "allow_private_hosts", False):
+        return
+
+    try:
+        literal = ipaddress.ip_address(host)
+    except ValueError:
+        literal = None
+    if literal is not None:
+        if _blocked_ip(literal):
+            raise SourceError("blocked_host", f"拒绝访问非公网地址 {host}")
+        return
+
+    try:
+        infos = await asyncio.to_thread(socket.getaddrinfo, host, None, 0, socket.SOCK_STREAM)
+    except OSError as exc:
+        raise SourceError("blocked_host", f"域名 {host} 解析失败: {exc}") from exc
+
+    addresses = {str(info[4][0]).split("%")[0] for info in infos if info[4]}
+    if not addresses:
+        raise SourceError("blocked_host", f"域名 {host} 没有解析结果")
+
+    for raw in addresses:
+        try:
+            ip = ipaddress.ip_address(raw)
+        except ValueError:
+            continue
+        if _blocked_ip(ip):
+            raise SourceError("blocked_host", f"域名 {host} 解析到非公网地址 {raw}")
+
+
+async def _validate_target(url: str, security: Any) -> None:
+    """校验一个待请求的 URL：协议、凭据、主机地址。
+
+    Args:
+        url: 待校验地址。
+        security: 安全配置。
+
+    Raises:
+        SourceError: 协议不允许、带凭据或主机不合法时抛出。
+    """
+
+    parsed = urlparse(url)
+    scheme = (parsed.scheme or "").lower()
+    allowed = {"https"}
+    if getattr(security, "allow_http", False):
+        allowed.add("http")
+    if scheme not in allowed:
+        raise SourceError(
+            "insecure_url",
+            f"只允许 {'/'.join(sorted(allowed))} 地址，实际是 {scheme or '未知协议'}",
+        )
+    if parsed.username or parsed.password:
+        raise SourceError("insecure_url", "地址里不允许携带用户名/密码")
+    host = parsed.hostname
+    if not host:
+        raise SourceError("insecure_url", "地址缺少主机名")
+    await _assert_host_allowed(host, security)
+
+
+# ---------------------------------------------------------------------------
+# 解析：从消息 / get_msg 里找视频段
+# ---------------------------------------------------------------------------
 
 
 def _unwrap_payload(payload: Any) -> Any:
@@ -188,51 +303,60 @@ async def resolve_source(ctx: Any, message: Mapping[str, Any], logger: Any = Non
     )
 
 
-def _is_http(value: str) -> bool:
-    """判断字符串是否为 HTTP(S) 地址。
-
-    Args:
-        value: 待判断字符串。
-
-    Returns:
-        bool: 是 HTTP(S) 时为 True。
-    """
-
-    return value.lower().startswith(("http://", "https://"))
+# ---------------------------------------------------------------------------
+# 取数：下载 / 本地读取 / Base64
+# ---------------------------------------------------------------------------
 
 
-async def _download(url: str, *, max_bytes: int, timeout: float) -> bytes:
-    """流式下载，边下边判体积，绝不一次性读进内存。
+async def _download(url: str, *, max_bytes: int, timeout: float, security: Any) -> bytes:
+    """流式下载，逐跳校验重定向目标，边下边判体积。
 
     Args:
         url: 视频地址。
         max_bytes: 体积上限（字节）。
         timeout: 超时（秒）。
+        security: 安全配置。
 
     Returns:
         bytes: 视频二进制。
 
     Raises:
-        SourceError: 超限或下载失败时抛出。
+        SourceError: 超限、地址被拒或下载失败时抛出。
     """
 
+    max_redirects = max(0, int(getattr(security, "max_redirects", 3)))
+    current = url
     buffer = bytearray()
+
     try:
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(timeout, connect=min(timeout, 15.0)),
-            follow_redirects=True,
+            follow_redirects=False,  # 手动跟跳，才能逐跳校验
             trust_env=True,
             headers={"User-Agent": _USER_AGENT},
         ) as client:
-            async with client.stream("GET", url) as response:
-                response.raise_for_status()
-                declared = response.headers.get("content-length")
-                if declared and declared.isdigit() and int(declared) > max_bytes:
-                    raise SourceError("too_large", f"视频体积 {int(declared)} 字节超过上限 {max_bytes}")
-                async for chunk in response.aiter_bytes(64 * 1024):
-                    buffer.extend(chunk)
-                    if len(buffer) > max_bytes:
-                        raise SourceError("too_large", f"视频下载超过上限 {max_bytes} 字节")
+            for _hop in range(max_redirects + 1):
+                await _validate_target(current, security)
+                async with client.stream("GET", current) as response:
+                    if response.status_code in (301, 302, 303, 307, 308):
+                        location = response.headers.get("location")
+                        if not location:
+                            raise SourceError("redirect_failed", "重定向响应缺少 Location")
+                        current = urljoin(current, location)
+                        continue
+
+                    response.raise_for_status()
+                    declared = response.headers.get("content-length")
+                    if declared and declared.isdigit() and int(declared) > max_bytes:
+                        raise SourceError("too_large", f"视频体积 {int(declared)} 字节超过上限 {max_bytes}")
+
+                    async for chunk in response.aiter_bytes(64 * 1024):
+                        buffer.extend(chunk)
+                        if len(buffer) > max_bytes:
+                            raise SourceError("too_large", f"视频下载超过上限 {max_bytes} 字节")
+                    break
+            else:
+                raise SourceError("redirect_failed", f"重定向超过 {max_redirects} 次")
     except SourceError:
         raise
     except Exception as exc:  # noqa: BLE001 - 网络错误统一归一
@@ -243,28 +367,74 @@ async def _download(url: str, *, max_bytes: int, timeout: float) -> bytes:
     return bytes(buffer)
 
 
-def _read_local(path: Path, *, max_bytes: int) -> bytes:
-    """读取本地文件并检查体积。
+def _allowed_roots(security: Any) -> list[Path]:
+    """读取并规范化允许读取的本地目录白名单。
+
+    Args:
+        security: 安全配置。
+
+    Returns:
+        list[Path]: 已解析的目录列表。
+    """
+
+    roots: list[Path] = []
+    for raw in getattr(security, "local_media_roots", []) or []:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        try:
+            roots.append(Path(os.path.expandvars(os.path.expanduser(text))).resolve())
+        except OSError:
+            continue
+    return roots
+
+
+def _read_local(path: Path, *, max_bytes: int, security: Any) -> bytes:
+    """在白名单目录内读取本地文件。
+
+    白名单为空时**一律拒绝**：协议端给出的 `file` 可能是任意路径，
+    默认放行等于给伪造事件开了一个任意文件读取口。
 
     Args:
         path: 文件路径。
         max_bytes: 体积上限。
+        security: 安全配置。
 
     Returns:
         bytes: 文件内容。
 
     Raises:
-        SourceError: 文件不存在、过大或读取失败时抛出。
+        SourceError: 目录未授权、不是普通文件、过大或读取失败时抛出。
     """
 
+    roots = _allowed_roots(security)
+    if not roots:
+        raise SourceError(
+            "local_path_not_allowed",
+            "视频只给了本地路径，但未配置 security.local_media_roots，已拒绝读取（这是安全默认值）",
+        )
+
     try:
-        size = path.stat().st_size
+        resolved = path.resolve()
+    except OSError as exc:
+        raise SourceError("local_path_not_allowed", f"路径无法解析: {exc}") from exc
+
+    # resolve() 会展开符号链接，因此这里同时挡住了「软链指向白名单外」的情况
+    if not any(resolved == root or resolved.is_relative_to(root) for root in roots):
+        raise SourceError("local_path_not_allowed", f"{resolved} 不在允许的媒体目录内")
+
+    if not resolved.is_file():
+        raise SourceError("local_path_not_allowed", f"{resolved} 不是普通文件")
+
+    try:
+        size = resolved.stat().st_size
     except OSError as exc:
         raise SourceError("download_failed", f"本地文件不可读: {exc}") from exc
     if size > max_bytes:
         raise SourceError("too_large", f"本地视频 {size} 字节超过上限 {max_bytes}")
+
     try:
-        return path.read_bytes()
+        return resolved.read_bytes()
     except OSError as exc:
         raise SourceError("download_failed", f"读取本地文件失败: {exc}") from exc
 
@@ -334,22 +504,24 @@ async def fetch_video_bytes(
     *,
     max_bytes: int,
     timeout: float,
+    security: Any,
     logger: Any = None,
 ) -> bytes:
-    """把视频源变成字节，按可靠性从高到低依次尝试各种取数方式。
+    """把视频源变成字节，所有取数方式都受同一套地址策略约束。
 
     Args:
         ctx: 插件上下文。
         source: 视频来源。
         max_bytes: 体积上限（字节）。
         timeout: 下载超时（秒）。
+        security: 安全配置（https-only、私网拦截、本地目录白名单）。
         logger: 可选日志器。
 
     Returns:
         bytes: 视频二进制。
 
     Raises:
-        SourceError: 所有取数方式都失败时抛出。
+        SourceError: 所有取数方式都失败或被安全策略拒绝时抛出。
     """
 
     data = source.data
@@ -365,32 +537,31 @@ async def fetch_video_bytes(
         candidate = value.strip()
         if not candidate:
             continue
-        if _is_http(candidate):
-            return await _download(candidate, max_bytes=max_bytes, timeout=timeout)
         if candidate.lower().startswith("base64://"):
             return _decode_base64(candidate, max_bytes=max_bytes)
-        # 本地绝对路径（同机部署时协议端可能直接给路径）
+        if candidate.lower().startswith(("http://", "https://")):
+            return await _download(candidate, max_bytes=max_bytes, timeout=timeout, security=security)
+        # 本地路径：必须落在白名单目录内
         local_path = Path(unquote(urlparse(candidate).path or candidate))
-        if local_path.is_file():
-            return _read_local(local_path, max_bytes=max_bytes)
-        if os.path.isabs(candidate) and Path(candidate).is_file():
-            return _read_local(Path(candidate), max_bytes=max_bytes)
+        if local_path.is_file() or os.path.isabs(candidate):
+            return _read_local(Path(candidate), max_bytes=max_bytes, security=security)
 
     file_detail = await _file_from_call_data(ctx, source)
     if file_detail:
-        for key in ("url", "file", "path", "base64"):
+        inline = file_detail.get("base64")
+        if isinstance(inline, str) and inline.strip():
+            return _decode_base64(inline.strip(), max_bytes=max_bytes)
+        for key in ("url", "file", "path"):
             value = file_detail.get(key)
             if not isinstance(value, str) or not value.strip():
                 continue
             candidate = value.strip()
-            if _is_http(candidate):
-                return await _download(candidate, max_bytes=max_bytes, timeout=timeout)
             if candidate.lower().startswith("base64://"):
                 return _decode_base64(candidate, max_bytes=max_bytes)
-            local_path = Path(candidate)
-            if local_path.is_file():
-                return _read_local(local_path, max_bytes=max_bytes)
+            if candidate.lower().startswith(("http://", "https://")):
+                return await _download(candidate, max_bytes=max_bytes, timeout=timeout, security=security)
+            return _read_local(Path(candidate), max_bytes=max_bytes, security=security)
 
     if logger is not None:
         logger.debug("视频插件: 视频段字段为 %s", sorted(str(key) for key in data))
-    raise SourceError("no_url", "视频段里既没有可下载的 url，也没有本地文件或 Base64")
+    raise SourceError("no_url", "视频段里既没有可下载的 url，也没有可访问的本地文件或 Base64")

@@ -67,6 +67,16 @@ max_concurrent = 1
 # 保留临时帧便于排查画质
 debug_keep_frames = false
 
+[security]
+# 只放行 https；视频 url 来自不可信的 OneBot 段，别轻易放开
+allow_http = false
+# 是否允许访问 loopback / 私网 / link-local 地址（仅同机自建协议端才需要）
+allow_private_hosts = false
+# 允许读取的本地目录白名单；留空表示完全禁止读取本地路径
+local_media_roots = []
+# 最多跟随几次重定向（每一跳都会重新校验）
+max_redirects = 3
+
 [runtime]
 # 自定义 ffmpeg 路径；留空则依次尝试环境变量、PATH、imageio-ffmpeg 自带二进制
 ffmpeg_path = ""

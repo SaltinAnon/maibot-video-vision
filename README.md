@@ -198,11 +198,23 @@ cache_ttl_hours = 24
 max_concurrent = 1
 debug_keep_frames = false
 
+[security]
+allow_http = false              # 只放行 https
+allow_private_hosts = false     # 拦截 loopback / 私网 / link-local
+local_media_roots = []          # 允许读的本地目录；留空=完全禁止
+max_redirects = 3               # 每一跳重定向都会重新校验
+
 [runtime]
 ffmpeg_path = ""
 download_timeout_seconds = 30
 ask_max_chars = 80
 ```
+
+> `[security]` 是**默认最严**的一组开关，请先读一遍再决定是否放开：
+> 视频 `url` 来自协议端返回的 OneBot 段，属于不可信输入。伪造一条事件就能让插件去探测内网
+> 或读本机文件，所以默认只允许 `https` + 公网地址，本地路径一律拒绝。
+> 只有当你自建协议端、媒体服务跑在同机（如 `http://127.0.0.1:3000/xxx`）且信任它时，
+> 才值得把 `allow_http` / `allow_private_hosts` 打开，并把缓存目录加进 `local_media_roots`。
 
 几个值得先改的：
 
@@ -248,6 +260,9 @@ ask_max_chars = 80
 | 日志报 `vision_failed` | `vlm` 任务没配模型 / 模型 `visual` 不为 true / 模型名填错 |
 | 解析很慢 | 视频大 → 调小 `max_download_mb`、`max_duration_seconds`；或把 `hook_sync_budget_ms` 降到 8000 |
 | 摘要太笼统 | 调大 `max_frames`（4~6）、`max_edge_px`（768），或换更强的 vlm |
+| 日志报 `insecure_url` | 视频地址是 `http://` 或重定向到了非 https：正常拦截；确需放行改 `security.allow_http` |
+| 日志报 `blocked_host` | 地址解析到 127.0.0.1 / 192.168.x / 10.x 等非公网 IP：同机部署才开 `security.allow_private_hosts` |
+| 日志报 `local_path_not_allowed` | 协议端只给了本地路径：把它所在目录加进 `security.local_media_roots` |
 
 ## 9. 本地自检（不需要 QQ、不需要 API Key）
 
@@ -297,7 +312,7 @@ maibot01/
 - **不越权**：只用 manifest 里声明的三个能力；不发消息、不读无关历史。
 - **不静默失败**：任何一步失败都会写明确原因（`no_ffmpeg` / `no_video_segment` / `vision_failed` …）。
 - **不污染主链**：钩子有超时、有冷却、有并发上限，失败一律放行原消息。
-- **数据落点**：缓存写在 `data/plugins/com.saltin.video-vision/`，临时帧写在 `temp/plugins/…` 并在解析后删除。
+- **数据落点**：缓存写在 `data/plugins/github.saltinanon.video-vision/`，临时帧写在 `temp/plugins/…` 并在解析后删除。
 
 ## License
 

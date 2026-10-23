@@ -21,8 +21,7 @@ import subprocess
 import sys
 import tempfile
 import threading
-from functools import partial
-from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -122,8 +121,12 @@ def check_config() -> None:
         plugin_author="Saltin",
     )
     sections = schema.get("sections", {})
-    check("Schema 生成了 6 个分区（含 [plugin] 版本节）", len(sections) == 6, str(sorted(sections)))
+    check("Schema 生成了 7 个分区（含 [plugin] 与 [security]）", len(sections) == 7, str(sorted(sections)))
     check("抽帧分区存在", "frames" in sections)
+    check("安全分区存在", "security" in sections)
+    check("默认只放行 https", instance.security.allow_http is False)
+    check("默认拦截私网地址", instance.security.allow_private_hosts is False)
+    check("默认禁止读本地文件", instance.security.local_media_roots == [])
 
 
 def check_components() -> None:
@@ -194,25 +197,56 @@ def make_sample_video(ffmpeg: str, target: Path) -> None:
     )
 
 
+class MediaHandler(BaseHTTPRequestHandler):
+    """极简文件服务：额外提供 /redirect-evil 用于测试「重定向到非法协议」。"""
+
+    directory = "."
+
+    def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler 约定
+        """处理 GET。"""
+
+        if self.path.startswith("/redirect-evil"):
+            self.send_response(302)
+            self.send_header("Location", "file:///etc/passwd")
+            self.end_headers()
+            return
+
+        name = self.path.lstrip("/").split("?")[0]
+        target = Path(self.directory) / name
+        if target.is_file():
+            data = target.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "video/mp4")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
+
+        self.send_error(404)
+
+    def log_message(self, *args: object) -> None:
+        """静音访问日志。"""
+
+
 class FakeCtx(PluginContext):
     """只实现插件真正用到的那几条能力的假上下文。"""
 
-    def __init__(self, data_dir: Path, runtime_dir: Path, *, video_url: str, caption: str) -> None:
+    def __init__(self, data_dir: Path, runtime_dir: Path, *, video_data: dict, caption: str) -> None:
         """初始化。
 
         Args:
             data_dir: 持久化目录。
             runtime_dir: 临时目录。
-            video_url: 假 get_msg 返回的视频地址。
+            video_data: 假 get_msg 返回的 video 段 data（可含 url / file / file_size）。
             caption: 假视觉模型返回的文本。
         """
 
-        self.video_url = video_url
+        self.video_data = video_data
         self.caption = caption
         self.llm_calls: list[dict] = []
         self.api_calls: list[str] = []
         self.sent: list[str] = []
-        super().__init__("com.saltin.video-vision", self._rpc, PluginPaths(data_dir, runtime_dir))
+        super().__init__("github.saltinanon.video-vision", self._rpc, PluginPaths(data_dir, runtime_dir))
 
     async def _rpc(self, method: str, plugin_id: str, payload: dict, **kwargs) -> dict:
         """模拟 Host 的 cap.call。
@@ -250,10 +284,7 @@ class FakeCtx(PluginContext):
                     "message_id": args.get("message_id", ""),
                     "message": [
                         {"type": "text", "data": "看我拍的"},
-                        {
-                            "type": "video",
-                            "data": {"file": "demo.mp4", "url": self.video_url, "file_size": 123456},
-                        },
+                        {"type": "video", "data": dict(self.video_data)},
                     ],
                 },
             }
@@ -315,18 +346,35 @@ async def run_flow(ffmpeg: str) -> None:
         make_sample_video(ffmpeg, video_path)
         check("示例视频已生成", video_path.stat().st_size > 0, f"{video_path.stat().st_size} bytes")
 
-        handler = partial(SimpleHTTPRequestHandler, directory=str(media_dir))
-        server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        # BaseHTTPRequestHandler 不接受 directory 关键字，用子类挂上目录
+        handler_class = type("ScopedMediaHandler", (MediaHandler,), {"directory": str(media_dir)})
+        server = ThreadingHTTPServer(("127.0.0.1", 0), handler_class)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         port = server.server_address[1]
         video_url = f"http://127.0.0.1:{port}/demo.mp4"
 
         try:
-            ctx = FakeCtx(temp_dir / "data", temp_dir / "runtime", video_url=video_url, caption="三个纯色场景依次切换，最后停在一段白色文字上")
+            ctx = FakeCtx(
+                temp_dir / "data",
+                temp_dir / "runtime",
+                video_data={"file": "demo.mp4", "url": video_url, "file_size": 123456},
+                caption="三个纯色场景依次切换，最后停在一段白色文字上",
+            )
             plugin = create_plugin()
             plugin._set_context(ctx)  # noqa: SLF001 - 测试专用注入
             plugin.set_plugin_config({})
+            await plugin.on_load()
+
+            # 安全自检：默认策略下，指向 127.0.0.1 的 http 地址必须被拒绝
+            strict_result = await plugin._pipeline.analyze_message(build_message("msg-strict"))  # noqa: SLF001
+            check("默认拒绝 http 明文地址", strict_result.reason == "insecure_url", f"{strict_result.reason} / {strict_result.error}")
+            check("被拒绝时不调用视觉模型", len(ctx.llm_calls) == 0, str(len(ctx.llm_calls)))
+
+            # 测试环境用本机 http 服务，显式放开（生产默认是关的）
+            plugin.set_plugin_config(
+                {"plugin": {"config_version": "1.0.1"}, "security": {"allow_http": True, "allow_private_hosts": True}}
+            )
             await plugin.on_load()
 
             # --- 第一次：应该真解析 ---
@@ -385,7 +433,7 @@ async def run_flow(ffmpeg: str) -> None:
             )
 
             # --- 第五次：视频地址坏掉，必须放行原消息而不是抛异常 ---
-            ctx.video_url = f"http://127.0.0.1:{port}/missing.mp4"
+            ctx.video_data = {"file": "broken.mp4", "url": f"http://127.0.0.1:{port}/missing.mp4", "file_size": 111}
             broken = build_message("msg-005")
             broken["raw_message"][-1] = {"type": "text", "data": "[视频] 文件: broken.mp4，大小: 111"}
             broken_result = await plugin.handle_incoming(message=broken)
@@ -396,7 +444,37 @@ async def run_flow(ffmpeg: str) -> None:
                 str(broken["raw_message"]),
             )
 
+            # --- 安全：本地路径默认拒绝，白名单内放行 ---
+            local_size = video_path.stat().st_size
+            ctx.video_data = {"file": str(video_path), "file_size": local_size}
+            local_msg = build_message("msg-local")
+            local_msg["raw_message"][-1] = {"type": "text", "data": "[视频] 文件: local-only.mp4，大小: 4242"}
+            denied = await plugin._pipeline.analyze_message(local_msg)  # noqa: SLF001
+            check("默认拒绝读取本地路径", denied.reason == "local_path_not_allowed", f"{denied.reason} / {denied.error}")
+
+            plugin.set_plugin_config(
+                {
+                    "plugin": {"config_version": "1.0.1"},
+                    "security": {
+                        "allow_http": True,
+                        "allow_private_hosts": True,
+                        "local_media_roots": [str(media_dir)],
+                    }
+                }
+            )
+            await plugin.on_load()
+            allowed = await plugin._pipeline.analyze_message(local_msg)  # noqa: SLF001
+            check("白名单目录内的本地视频可读", allowed.ok, f"{allowed.reason} / {allowed.error}")
+
+            # --- 安全：重定向到 file:// 必须被拦（逐跳校验） ---
+            ctx.video_data = {"url": f"http://127.0.0.1:{port}/redirect-evil", "file_size": 7777}
+            redirect_msg = build_message("msg-redir")
+            redirect_msg["raw_message"][-1] = {"type": "text", "data": "[视频] 文件: redirect.mp4，大小: 7777"}
+            redirected = await plugin._pipeline.analyze_message(redirect_msg)  # noqa: SLF001
+            check("重定向到非法协议被拒绝", redirected.reason == "insecure_url", f"{redirected.reason} / {redirected.error}")
+
             # --- 工具 ---
+            ctx.video_data = {"file": "demo.mp4", "url": video_url, "file_size": 123456}
             ctx.history = [build_message("msg-003")]
             tool_result = await plugin.watch_video(stream_id="qq-group-9527", question="画面里有几个场景？")
             check("watch_video 成功", bool(tool_result.get("success")), str(tool_result))
@@ -406,12 +484,14 @@ async def run_flow(ffmpeg: str) -> None:
             ctx2 = FakeCtx(
                 temp_dir / "data",
                 temp_dir / "runtime",
-                video_url=video_url,
+                video_data={"file": "demo.mp4", "url": video_url, "file_size": 123456},
                 caption="这段文本不应该被用到：说明缓存没生效",
             )
             plugin2 = create_plugin()
             plugin2._set_context(ctx2)  # noqa: SLF001
-            plugin2.set_plugin_config({})
+            plugin2.set_plugin_config(
+                {"plugin": {"config_version": "1.0.1"}, "security": {"allow_http": True, "allow_private_hosts": True}}
+            )
             await plugin2.on_load()
             await plugin2.handle_incoming(message=build_message("msg-006"))
             check("重启后缓存仍然生效", len(ctx2.llm_calls) == 0, f"{len(ctx2.llm_calls)} 次调用")
