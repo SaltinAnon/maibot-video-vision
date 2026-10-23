@@ -1,0 +1,74 @@
+# 视频识眼 · 配置示例
+# 本文件只是参考：真正的 config.toml 由 Runner 依据 video_vision_core/config_model.py 自动生成，
+# 位置在 MaiBot/plugins/video-vision/config.toml，可在 WebUI 里可视化编辑。
+# 改完保存会自动热重载；改坏会回滚到上一版。
+
+[plugin]
+# 配置结构版本号。插件以后增删配置字段时会把它加一，用于「补齐字段 / 按新结构重建」。
+config_version = "1.0.0"
+
+[detect]
+# 适配器把 video 段降级成的文本长这样：「[视频] 文件: xxx.mp4，大小: 12345」
+# 下面这些正则只要能命中其中任意一段，就认为这条消息里有视频。
+marker_patterns = ['\[视频\]', '\[视频消息\]', '\[video\]', 'CQ:video']
+# mention_or_private：私聊或被 @ 才解析（最省 token）
+# always：任何视频都解析（最贵）
+# off：钩子不解析，只能靠 watch_video 工具按需调用
+trigger_mode = "mention_or_private"
+# 同一个聊天流两次「主动解析」的最小间隔（秒）。缓存命中不受此限制。
+cooldown_seconds = 30
+# watch_video 工具回看多少条历史消息来寻找视频
+scan_recent_for_tool = 12
+# 注入到消息里的前缀
+inject_prefix = "[视频内容]"
+# 摘要后是否附「4帧/8s/缓存」这类元信息（约 8 token）
+include_meta = true
+# 解析失败时是否把原因写进上下文（默认只写日志，避免模型拿失败原因编故事）
+inject_on_failure = false
+
+[frames]
+# 单个视频送给视觉模型的最大/最小帧数
+max_frames = 5
+min_frames = 2
+# 平均每多少秒抽一帧（最终帧数会夹在 min/max 之间）
+seconds_per_frame = 6.0
+# 关键帧长边像素上限：512 已足够，768 更清楚但更贵
+max_edge_px = 512
+# ffmpeg JPEG 质量，2 最好 / 31 最差
+jpeg_quality = 5
+# 用 dHash + 颜色网格去掉几乎一样的帧
+dedupe = true
+dedupe_threshold = 3
+
+[vision]
+# MaiBot 的「看图」任务名，必须在模型管理里配了 visual = true 的多模态模型
+task_name = "vlm"
+# 留空用任务默认模型；也可强制指定某个模型名
+model_name = ""
+max_output_tokens = 200
+temperature = 0.2
+caption_max_chars = 120
+
+[budget]
+# 单个视频下载体积上限（MB）
+max_download_mb = 20
+# 只分析前 N 秒
+max_duration_seconds = 120
+# 钩子里最多等多久（毫秒）；0 = 钩子只做缓存命中，未命中的交给 watch_video
+hook_sync_budget_ms = 15000
+# 每天最多解析多少个新视频（缓存命中不计）
+daily_video_limit = 60
+# 每天视觉调用的估算 token 上限
+daily_token_budget = 60000
+# 摘要缓存有效期（小时）
+cache_ttl_hours = 24
+# 并发解析数，1 表示排队
+max_concurrent = 1
+# 保留临时帧便于排查画质
+debug_keep_frames = false
+
+[runtime]
+# 自定义 ffmpeg 路径；留空则依次尝试环境变量、PATH、imageio-ffmpeg 自带二进制
+ffmpeg_path = ""
+download_timeout_seconds = 30
+ask_max_chars = 80

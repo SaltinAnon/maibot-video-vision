@@ -1,0 +1,10 @@
+{
+  "plugin.name": "Video Vision",
+  "plugin.description": "Let MaiBot actually see videos: keyframe sampling + one vision call, compressed into a short caption in context.",
+  "component.video_vision_inject.name": "Video caption injection",
+  "component.video_vision_inject.description": "Detect inbound video messages, sample keyframes, and inject a caption into the message body",
+  "component.watch_video.name": "Watch video",
+  "component.watch_video.description": "Inspect the most recent video in this chat, optionally answering a question about it",
+  "component.video.name": "Video Vision admin",
+  "component.video.description": "Show runtime status or clear the caption cache"
+}
