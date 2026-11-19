@@ -30,13 +30,7 @@
       "value": "video"
     }
   },
-  "dependencies": [
-    {
-      "type": "python_package",
-      "name": "imageio-ffmpeg",
-      "version_spec": ">=0.4.9"
-    }
-  ],
+  "dependencies": [],
   "capabilities": [
     "api.call",
     "llm.generate",
